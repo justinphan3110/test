@@ -6,7 +6,9 @@ import pandas as pd
 from categories import subcategories, categories
 from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 import time
+import random
 
+random.seed(0)
 choices = ["A", "B", "C", "D"]
 
 
@@ -41,7 +43,7 @@ def gen_prompt(train_df, subject, k=-1):
 
 
 @torch.no_grad()
-def eval(args, subject, model, tokenizer, dev_df, test_df):
+def eval(args, subject, model, tokenizer, dev_df, test_df, happy_prompts):
     cors = []
     all_probs = []
     answers = choices[: test_df.shape[1] - 2]
@@ -51,14 +53,16 @@ def eval(args, subject, model, tokenizer, dev_df, test_df):
         k = args.ntrain
         prompt_end = format_example(test_df, i, include_answer=False)
         train_prompt = gen_prompt(dev_df, subject, k)
-        prompt = train_prompt + prompt_end
+        happy_prompt = random.choice(happy_prompts)
+        
+        prompt = happy_prompt + train_prompt + prompt_end
 
         input_ids = tokenizer(prompt, return_tensors="pt").input_ids.cuda()
 
         while input_ids.shape[-1] > 2048:
             k -= 1
             train_prompt = gen_prompt(dev_df, subject, k)
-            prompt = train_prompt + prompt_end
+            prompt = happy_prompt + train_prompt + prompt_end
             input_ids = tokenizer(prompt, return_tensors="pt").input_ids.cuda()
 
         label = test_df.iloc[i, test_df.shape[1] - 1]
@@ -133,7 +137,17 @@ def main(args):
     subcat_cors = {
         subcat: [] for subcat_lists in subcategories.values() for subcat in subcat_lists
     }
-    cat_cors = {cat: [] for cat in categories}
+    cat_cors = {cat: [] for cat in categories}    
+    
+    if args.mood_level >= 0:
+        import json
+        print("Prompting with mood level", args.mood_level)
+        with open(f"mood.json") as file:
+            mood_dict = json.load(file)
+        happy_prompts = mood_dict[str(args.mood_level)]
+        happy_prompts = [p + "\n" for p in happy_prompts]
+    else:
+        happy_prompts = [""]
 
     for subject in subjects:
         dev_df = pd.read_csv(
@@ -143,7 +157,7 @@ def main(args):
             os.path.join(args.data_dir, "test", subject + "_test.csv"), header=None
         )
 
-        cors, acc, probs = eval(args, subject, model, tokenizer, dev_df, test_df)
+        cors, acc, probs = eval(args, subject, model, tokenizer, dev_df, test_df, happy_prompts)
         subcats = subcategories[subject]
         for subcat in subcats:
             subcat_cors[subcat].append(cors)
@@ -180,6 +194,7 @@ if __name__ == "__main__":
     parser.add_argument("--ngpu", "-g", type=int, default=2)
     parser.add_argument("--data_dir", "-d", type=str, default="data")
     parser.add_argument("--save_dir", "-s", type=str, default="results")
+    parser.add_argument("--mood_level", type=int, default=-1)
     parser.add_argument(
         "--model",
         "-m",
